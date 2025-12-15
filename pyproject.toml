@@ -1,5 +1,5 @@
 [build-system]
-requires = [ "setuptools>=64.0.0", "wheel",]
+requires = ["setuptools>=64.0.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,14 +7,30 @@ name = "r2r"
 version = "0.0.1"
 description = "Mix inference with small language models and large language models at token level for efficiency"
 readme = "README.md"
-classifiers = [ "Programming Language :: Python :: 3", "License :: OSI Approved :: Apache Software License",]
-requires-python = ">=3.8"
-dependencies = [ "sglang[all]==0.4.6", "flashinfer-python==0.2.3", "torch==2.6.0", "scikit-learn", "accelerate",]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: Apache Software License",
+]
+
+# ★ Python 3.12에서 확실히 돌아가게: 3.10 이상 ~ 3.12까지로 제한
+requires-python = ">=3.10,<3.13"
+
+dependencies = [
+    # ★ torch 2.6.0과 많이 쓰이는 조합: 0.4.6.post5로 고정
+    "sglang[all]==0.4.6.post5",
+    "torch==2.6.0",
+    "scikit-learn",
+    "accelerate",
+]
 
 [project.optional-dependencies]
-train = [ "jieba==0.42.1", "nltk==3.9.1", "wandb",]
+train = [
+    "jieba==0.42.1",
+    "nltk==3.9.1",
+    "wandb",
+]
 
 [tool.setuptools.packages.find]
-where = [ ".",]
-include = [ "r2r",]
-exclude = [ "tests*", "scripts*",]
+where = ["."]
+include = ["r2r"]
+exclude = ["tests*", "scripts*"]

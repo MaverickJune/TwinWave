@@ -154,7 +154,11 @@ def parse_args():
     # Add repeat input parameter
     parser.add_argument('--repeat_input_num', type=int, default=1,
                       help='Number of times to repeat each input in batch dimension')
-    
+
+    # Start index for resuming from a specific entry
+    parser.add_argument('--start_index', type=int, default=0,
+                      help='Start processing from this index in the dataset (0-indexed)')
+
     args = parser.parse_args()
 
     args.test_run_time = True
@@ -470,6 +474,7 @@ def evaluate_problem(
                 print_tokens=False,
                 **kwargs_generation
             )
+            # 2025.12.15: 여기서 generted_texts 가 question 에 대해서 생성된 답변들, line 496부터가 답변 후처리
             
             # End timer and print duration
             if test_run_time:
@@ -532,23 +537,23 @@ def evaluate_problem(
                 avg_params_billions = stats['avg_params_billions']
                 
                 result = {
-                "problem_id": item['ID'],
-                "correct_answer": item['Answer'],
-                "has_extracted_answer": has_answer,
-                "predicted_answer": predicted_answer,
-                "is_correct": is_correct,
-                "input_tokens": input_tokens,
-                "output_tokens": output_tokens,
-                "total_tokens": total_tokens,
-                "full_output": generated_text,
-                "quick_model_percentage": quick_model_percentage,
-                "reference_model_percentage": reference_model_percentage,
-                "model_agreement_percentage": model_agreement_percentage,
-                "quick_source_agreement_percentage": quick_source_agreement_percentage,
-                "total_params_billions": total_params_billions,
-                "avg_params_billions": avg_params_billions,
-                "run_time": run_time
-            }
+                    "problem_id": item['ID'],
+                    "correct_answer": item['Answer'],
+                    "has_extracted_answer": has_answer,
+                    "predicted_answer": predicted_answer,
+                    "is_correct": is_correct,
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "total_tokens": total_tokens,
+                    "full_output": generated_text,
+                    "quick_model_percentage": quick_model_percentage,
+                    "reference_model_percentage": reference_model_percentage,
+                    "model_agreement_percentage": model_agreement_percentage,
+                    "quick_source_agreement_percentage": quick_source_agreement_percentage,
+                    "total_params_billions": total_params_billions,
+                    "avg_params_billions": avg_params_billions,
+                    "run_time": run_time
+                }
             else:
                 result = {
                     "problem_id": item['ID'],
@@ -610,6 +615,10 @@ def save_results(results: List[Dict], model_name: str, gpu_id: int, thread_id: i
     outputs_dir = f"{output_dir}/outputs_{model_name}_gpu{gpu_id}_thread{thread_id}_{timestamp}"
     os.makedirs(outputs_dir, exist_ok=True)
     
+    # Make directory for incorrectly answered problems
+    wrong_answer_dir = f"{outputs_dir}/wrong_answers_{model_name}_gpu{gpu_id}_thread{thread_id}_{timestamp}"
+    os.makedirs(wrong_answer_dir, exist_ok=True)
+    
     # Track problem ID occurrences
     problem_id_counts = {}
     
@@ -626,6 +635,12 @@ def save_results(results: List[Dict], model_name: str, gpu_id: int, thread_id: i
             output_path = f"{outputs_dir}/{problem_id}_run_1.txt"
             
         write_to_file(output_path, result)
+        
+        # If the answer is incorrect, save to wrong_answers directory
+        if not result['is_correct']:
+            wrong_output_path = f"{wrong_answer_dir}/{problem_id}_run_{problem_id_counts[problem_id]}.json"
+            write_to_file(wrong_output_path, result)
+        
     
     # Save metadata to JSON
     json_path = f"{output_dir}/metadata_{model_name}_gpu{gpu_id}_thread{thread_id}_{timestamp}.json"
@@ -1062,9 +1077,19 @@ def main():
         dataset_split = dataset['train'] if 'train' in dataset else dataset['test']
     
     all_problems = preprocess_dataset(dataset_split, args.dataset_config_dict, args.output_dir)
-    
-    print(f"Preprocessed {len(all_problems)} problems")
-    
+
+    # Sort problems by ID to ensure deterministic order across runs
+    all_problems = sorted(all_problems, key=lambda x: x['ID'])
+
+    print(f"Preprocessed {len(all_problems)} problems (sorted by ID for deterministic order)")
+
+    # Save problem order mapping for reference (index -> problem_id)
+    problem_order_path = os.path.join(args.output_dir, 'problem_order.json')
+    problem_order = {idx: p['ID'] for idx, p in enumerate(all_problems)}
+    with open(problem_order_path, 'w') as f:
+        json.dump(problem_order, f, indent=2)
+    print(f"Problem order saved to {problem_order_path}")
+
     # Determine which problems to process
     completed_problems = get_completed_problems(args.output_dir) if args.resume else set()
     
@@ -1076,6 +1101,15 @@ def main():
         print(f"Resuming with {len(problems)} remaining problems")
     else:
         problems = all_problems
+
+    # Apply start_index to skip entries (useful for restarting from a specific point)
+    if args.start_index > 0:
+        if args.start_index >= len(problems):
+            print(f"Warning: start_index ({args.start_index}) >= number of problems ({len(problems)}). No problems to process.")
+            problems = []
+        else:
+            print(f"Starting from index {args.start_index} (skipping first {args.start_index} entries)")
+            problems = problems[args.start_index:]
     
     # Limit problem set for debug or testing
     if args.debug:
@@ -1299,7 +1333,44 @@ def write_to_csv(output_path: str, result: Dict):
     # Save to CSV
     df.to_csv(output_path, index=False)
     
-    
+def write_to_json(output_path: str, result: Dict):
+    """Write evaluation results to a JSON file.
+
+    Args:
+        output_path: Path where the JSON file will be saved
+        result: Dictionary containing evaluation results
+    """
+    # Build the output dictionary with basic fields
+    output_data = {
+        'problem_id': result['problem_id'],
+        'correct_answer': result['correct_answer'],
+        'has_extracted_answer': result['has_extracted_answer'],
+        'predicted_answer': result['predicted_answer'],
+        'is_correct': result['is_correct'],
+        'input_tokens': result.get('input_tokens', None),
+        'output_tokens': result.get('output_tokens', None),
+        'total_tokens': result.get('total_tokens', None),
+        'run_time': result.get('run_time', None),
+        'full_output': result['full_output']
+    }
+
+    # Add hybrid model statistics if available
+    if 'quick_model_percentage' in result:
+        output_data['quick_model_percentage'] = result['quick_model_percentage']
+        output_data['reference_model_percentage'] = result['reference_model_percentage']
+        output_data['model_agreement_percentage'] = result['model_agreement_percentage']
+        output_data['quick_source_agreement_percentage'] = result['quick_source_agreement_percentage']
+        output_data['total_params_billions'] = result['total_params_billions']
+        output_data['avg_params_billions'] = result['avg_params_billions']
+
+    # Add options if available (for multiple choice questions)
+    if 'options' in result:
+        output_data['options'] = result['options']
+
+    # Save to JSON
+    with open(output_path, 'w') as f:
+        json.dump(output_data, f, indent=2)
+
 if __name__ == "__main__":
     # Required for multiprocessing
     mp.set_start_method('spawn', force=True)
